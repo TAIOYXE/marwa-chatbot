@@ -212,12 +212,29 @@ def keyword_classify(message: str) -> IntentResult:
     """Fallback rule-based intent classifier when Ollama is unavailable."""
     msg = message.lower().strip()
 
-    # Booking patterns
+    # CANCEL — check first (before booking, which also matches "appointment")
+    if re.search(r'\b(cancel|can\'t make it|won\'t.*make|need.*cancel)\b', msg):
+        return IntentResult(intent=Intent.CANCEL, confidence=0.8)
+
+    # RESCHEDULE — check before booking
+    if re.search(r'\b(reschedule|change.*(appointment|time|date)|move.*(appointment|time)|different.*(day|time))\b', msg):
+        return IntentResult(intent=Intent.RESCHEDULE, confidence=0.8)
+
+    # STATUS — check before booking
+    if re.search(r'\b(status|update|check.*(appointment|car|vehicle|repair|status)|how.*(my|the).*(car|vehicle|repair|appointment|going)|is.*(my|the).*(car|ready|done|fixed))\b', msg):
+        return IntentResult(intent=Intent.CHECK_STATUS, confidence=0.8)
+
+    # GREETING — short messages that are just hellos (allow "hi there", "hello!", etc.)
+    if re.search(r'^(hi|hello|hey|good morning|good afternoon|sup|yo)\b', msg) and len(msg.split()) <= 3:
+        return IntentResult(intent=Intent.GREETING, confidence=0.9)
+
+    # BOOKING patterns
     book_patterns = [
-        r'\b(book|schedule|appointment|set up|make.*appointment|need.*(oil|brake|repair|service|fix|tire|ac|exhaust|diagnostic|check.*up|maintenance))\b',
+        r'\b(book|schedule|set up|make.*appointment|need.*(oil|brake|repair|service|fix|tire|ac|exhaust|diagnostic|check.*up|maintenance))\b',
         r'\b(want.*(to.*get|to.*have).*(oil|brake|repair|service|fix|tire|ac|exhaust))\b',
         r'\b(can i.*(bring|drop|come).*(car|vehicle|truck))\b',
         r'\b(i need.*(oil change|brake|repair|service|tune.up|maintenance))\b',
+        r'\b(i\'d like.*(to.*(book|schedule|get|have)).*(oil|brake|repair|service))\b',
     ]
     for pattern in book_patterns:
         if re.search(pattern, msg):
@@ -249,23 +266,7 @@ def keyword_classify(message: str) -> IntentResult:
 
             return IntentResult(intent=Intent.BOOK, confidence=0.7, entities=entities)
 
-    # Status check patterns
-    if re.search(r'\b(status|update|check.*(appointment|car|vehicle|repair|status)|how.*(my|the).*(car|vehicle|repair|appointment|going)|is.*(my|the).*(car|ready|done|fixed))\b', msg):
-        return IntentResult(intent=Intent.CHECK_STATUS, confidence=0.7)
-
-    # Reschedule patterns
-    if re.search(r'\b(reschedule|change.*(appointment|time|date)|move.*(appointment|time)|different.*(day|time))\b', msg):
-        return IntentResult(intent=Intent.RESCHEDULE, confidence=0.7)
-
-    # Cancel patterns
-    if re.search(r'\b(cancel|can\'t make it|won\'t.*make|need.*cancel)\b', msg):
-        return IntentResult(intent=Intent.CANCEL, confidence=0.7)
-
-    # Greeting patterns
-    if re.search(r'^(hi|hello|hey|good morning|good afternoon|sup|yo)[\s!.,]*$', msg):
-        return IntentResult(intent=Intent.GREETING, confidence=0.9)
-
-    # Question patterns
+    # QUESTION patterns
     if re.search(r'\b(how much|price|cost|hours|open|location|address|what.*(do|is|are)|do you|can you)\b', msg):
         return IntentResult(intent=Intent.ASK_QUESTION, confidence=0.6)
 
