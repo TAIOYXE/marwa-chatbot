@@ -8,31 +8,46 @@ Run this if you don't want to set up a webhook (no public URL needed).
 Usage:
     TELEGRAM_BOT_TOKEN="your_token" SHOP_OWNER_ID="uuid" python telegram_bot.py
 
-The bot uses the same intent classification and scheduling engine
-as the FastAPI service, but communicates directly via Telegram polling.
+The bot uses the same intent classification, scheduling engine, and
+handlers as the FastAPI service, imported from the src/ package.
 """
 
 import os
 import sys
 import logging
-import asyncio
-from datetime import date, datetime, timedelta
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+# Ensure src/ is on the path when run directly
+sys.path.insert(0, os.path.dirname(__file__))
+
+from src.config import (
+    SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY,
+    TELEGRAM_BOT_TOKEN,
+    SHOP_OWNER_ID,
+)
+from src.db import init_supabase_admin
+from src.classifier import classify_intent
+from src.handlers import (
+    handle_booking_intent,
+    handle_status_check,
+    handle_reschedule_intent,
+    handle_cancel_intent,
+    handle_question,
+)
+from src.knowledge import (
+    HOURS_MARKDOWN,
+    PRICING_MESSAGE,
+    GREETING_MESSAGE_TELEGRAM,
+)
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from main import (
-    classify_intent, keyword_classify,
-    handle_booking_intent, handle_status_check,
-    handle_reschedule_intent, handle_cancel_intent, handle_question,
-    get_available_slots, create_booking, BookingRequest,
-    get_customer_appointments, cancel_appointment,
-    SHOP_OWNER_ID, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL,
-    supabase_admin as _supabase_admin,
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
 )
-from supabase import create_client
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -40,24 +55,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger("marwa-telegram-bot")
 
-# Initialize Supabase admin client
+# ── Initialize Supabase ────────────────────────────────────────────────
 if SUPABASE_SERVICE_ROLE_KEY:
-    import main
-    main.supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    init_supabase_admin()
     logger.info("Supabase admin client initialized")
+else:
+    logger.warning(
+        "SUPABASE_SERVICE_ROLE_KEY not set — admin operations will fail"
+    )
 
 OWNER_ID = os.getenv("SHOP_OWNER_ID", SHOP_OWNER_ID)
 
+
+# ── Command Handlers ──────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send welcome message on /start."""
     user = update.effective_user
     await update.message.reply_text(
-        f"Hello {user.first_name}! 👋 I'm the Marwa Auto Repairs assistant.\n\n"
+        f"Hello {user.first_name}! 👋 I'm the Marwa Auto Repairs "
+        f"assistant.\n\n"
         f"I can help you:\n"
         f"• Book an appointment — just tell me what service and vehicle\n"
         f"  (e.g., \"I need an oil change for my 2020 Honda Civic\")\n"
-        f"• Check your appointment status — \"What's my appointment status?\"\n"
+        f"• Check your appointment status — "
+        f"\"What's my appointment status?\"\n"
         f"• Reschedule or cancel — \"I need to reschedule\"\n"
         f"• Ask about services, pricing, or hours\n\n"
         f"What can I do for you today?"
@@ -98,37 +120,30 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def hours_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show shop hours."""
     await update.message.reply_text(
-        "🕐 *Marwa Auto Repairs Hours*\n\n"
-        "• Monday–Friday: 8:00 AM – 5:00 PM\n"
-        "• Saturday: 9:00 AM – 3:00 PM\n"
-        "• Sunday: Closed\n\n"
-        "Want to book? Just tell me when!",
-        parse_mode="Markdown",
+        HOURS_MARKDOWN, parse_mode="Markdown"
     )
 
 
-async def pricing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def pricing_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
     """Show pricing."""
     await update.message.reply_text(
-        "💰 *Service Pricing*\n\n"
-        "• Oil Change: from $49.99\n"
-        "• Brake Repair: from $149.99\n"
-        "• Engine Diagnostics: $89.99\n"
-        "• Tire Services: from $25/tire\n"
-        "• AC Repair: from $129.99\n"
-        "• Custom Exhaust: from $299.99\n\n"
-        "All services include a free multi-point inspection.\n"
-        "Ready to book? Tell me what you need!",
+        f"💰 *Service Pricing*\n\n{PRICING_MESSAGE}",
         parse_mode="Markdown",
     )
 
 
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
     """Cancel an appointment via /cancel."""
     chat_id = str(update.effective_chat.id)
     response = await handle_cancel_intent(chat_id, "", OWNER_ID)
     await update.message.reply_text(response.reply)
 
+
+# ── Message Handler ───────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process all non-command messages."""
@@ -139,26 +154,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Classify intent
     intent_result = await classify_intent(text)
 
-    logger.info(f"Intent: {intent_result.intent.value} (confidence: {intent_result.confidence:.2f}) — \"{text[:80]}\"")
+    logger.info(
+        f"Intent: {intent_result.intent.value} "
+        f"(confidence: {intent_result.confidence:.2f}) "
+        f"— \"{text[:80]}\""
+    )
 
     # Route
     if intent_result.intent.value == "greeting":
         await update.message.reply_text(
-            f"Hello {user_name}! 👋 How can I help with your vehicle today?\n"
-            f"You can book an appointment, check your status, or ask about our services."
+            GREETING_MESSAGE_TELEGRAM.format(name=user_name)
         )
 
     elif intent_result.intent.value == "book_appointment":
         entities = intent_result.entities
-        response = await handle_booking_intent(chat_id, user_name, text, entities, OWNER_ID)
+        response = await handle_booking_intent(
+            chat_id, user_name, text, entities, OWNER_ID
+        )
         await update.message.reply_text(response.reply)
 
     elif intent_result.intent.value == "check_status":
-        response = await handle_status_check(chat_id, user_name, text, OWNER_ID)
+        response = await handle_status_check(
+            chat_id, user_name, text, OWNER_ID
+        )
         await update.message.reply_text(response.reply)
 
     elif intent_result.intent.value == "reschedule":
-        response = await handle_reschedule_intent(chat_id, text, OWNER_ID)
+        response = await handle_reschedule_intent(
+            chat_id, text, OWNER_ID
+        )
         await update.message.reply_text(response.reply)
 
     elif intent_result.intent.value == "cancel":
@@ -179,8 +203,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# ── Main ──────────────────────────────────────────────────────────────
+
 def main():
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    token = os.getenv("TELEGRAM_BOT_TOKEN", TELEGRAM_BOT_TOKEN)
     if not token:
         logger.error("TELEGRAM_BOT_TOKEN not set!")
         sys.exit(1)
@@ -200,7 +226,9 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel_command))
 
     # Messages
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    )
 
     logger.info("Starting Marwa Telegram Bot (polling mode)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
